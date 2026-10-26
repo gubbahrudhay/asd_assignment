@@ -1,59 +1,54 @@
-const http = require("http");
 const { execSync } = require("child_process");
 
 function seed() {
   execSync("npm run seed", { stdio: "pipe" });
 }
 
-function request(method, path, body = null) {
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: "127.0.0.1",
-      port: 3000,
-      path,
-      method,
-      headers: {},
-    };
-
-    let bodyData = null;
-    if (body !== null) {
-      bodyData = JSON.stringify(body);
-      options.headers["Content-Type"] = "application/json";
-      options.headers["Content-Length"] = Buffer.byteLength(bodyData);
-    }
-
-    const req = http.request(options, (res) => {
-      let data = "";
-      res.on("data", (chunk) => {
-        data += chunk;
-      });
-      res.on("end", () => {
-        let json = null;
-        try {
-          if (data) json = JSON.parse(data);
-        } catch (e) {
-          json = data;
-        }
-        resolve({
-          status: res.statusCode,
-          headers: res.headers,
-          body: json,
-        });
-      });
-    });
-
-    req.on("error", reject);
-    if (bodyData) {
-      req.write(bodyData);
-    }
-    req.end();
-  });
+async function request(method, path, body = null) {
+  const options = {
+    method,
+    headers: {},
+  };
+  if (body !== null) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const res = await fetch(`http://localhost:3000${path}`, options);
+  let json = null;
+  const text = await res.text();
+  try {
+    if (text) json = JSON.parse(text);
+  } catch (e) {
+    json = text;
+  }
+  return {
+    status: res.status,
+    headers: res.headers,
+    body: json,
+  };
 }
 
 function assert(condition, message) {
   if (!condition) {
     throw new Error(`Assertion failed: ${message}`);
   }
+}
+
+async function getLookups() {
+  const getAllUsers = await request("GET", "/users?limit=50");
+  const usersByUsername = {};
+  for (const u of getAllUsers.body.data) {
+    usersByUsername[u.username] = u;
+  }
+
+  const getAllPosts = await request("GET", "/posts?limit=50");
+  const postsByInsta = {};
+  for (const p of getAllPosts.body.data) {
+    const key = p.imageUrl.split("/")[4];
+    postsByInsta[key] = p;
+  }
+
+  return { usersByUsername, postsByInsta };
 }
 
 async function run() {
@@ -65,47 +60,70 @@ async function run() {
   assert(health.body.status === "OK", "Health body status should be OK");
   console.log("✔ GET /health passed");
 
-  // Seed database
+  // Initial Seed
   seed();
   console.log("✔ Database seeded");
 
-  // Helper to get user by username
-  const getAllUsers = await request("GET", "/users?limit=50");
-  const usersByUsername = {};
-  for (const u of getAllUsers.body.data) {
-    usersByUsername[u.username] = u;
-  }
+  // Problem 1: Basic User CRUD tests (Steps 04, 06, 07, 08)
+  console.log("Testing Problem 1: Basic User CRUD...");
+  // 1. Missing required field -> 400
+  const uMissing = await request("POST", "/users", { username: "onlyname" });
+  assert(uMissing.status === 400, "400 on missing required field");
+  assert(uMissing.body.error === "username, email and fullname are required", "exact error message");
 
-  const riya = usersByUsername["riya_travels"];
-  const arjun = usersByUsername["arjun_clicks"];
-  const dev = usersByUsername["dev_shoots"];
-  const aditya = usersByUsername["aditya_codes"];
-  const neha = usersByUsername["neha_designs"];
+  // 2. Duplicate username or email -> 409
+  const uDuplicate = await request("POST", "/users", {
+    username: "riya_travels",
+    email: "other@example.com",
+    fullname: "Copy Cat",
+  });
+  assert(uDuplicate.status === 409, "409 on duplicate username");
+  assert(uDuplicate.body.error === "username or email already taken", "exact error message");
 
-  assert(riya && arjun && dev && aditya && neha, "Found expected seeded users");
+  // 3. Create user ignoring extra fields (id, etc.) -> 201
+  const uExtra = await request("POST", "/users", {
+    username: "sneaky_test",
+    email: "sneaky@example.com",
+    fullname: "Sneaky Test",
+    id: 9999,
+  });
+  assert(uExtra.status === 201, "201 on create user");
+  assert(uExtra.body.id !== 9999, "id was auto-generated, not 9999");
+  assert(uExtra.body.username === "sneaky_test", "username matches");
+  assert(uExtra.body.isPrivate === false, "isPrivate defaults to false");
+  const sneakyId = uExtra.body.id;
 
-  // Helper to get post by insta##
-  const getAllPosts = await request("GET", "/posts?limit=50");
-  const postsByInsta = {};
-  for (const p of getAllPosts.body.data) {
-    const key = p.imageUrl.split("/")[4];
-    postsByInsta[key] = p;
-  }
+  // 4. GET /users/:id
+  const uGetOne = await request("GET", `/users/${sneakyId}`);
+  assert(uGetOne.status === 200, "200 on get user");
+  assert(uGetOne.body.username === "sneaky_test", "username matches");
 
-  const insta01 = postsByInsta["insta01"];
-  const insta05 = postsByInsta["insta05"];
-  const insta06 = postsByInsta["insta06"];
-  const insta10 = postsByInsta["insta10"];
-  const insta14 = postsByInsta["insta14"];
-  const insta15 = postsByInsta["insta15"];
-  const insta16 = postsByInsta["insta16"];
-  const insta17 = postsByInsta["insta17"];
-  const insta20 = postsByInsta["insta20"];
-  const insta22 = postsByInsta["insta22"];
-  const insta23 = postsByInsta["insta23"];
-  const insta24 = postsByInsta["insta24"];
+  const uGetOne404 = await request("GET", "/users/888888");
+  assert(uGetOne404.status === 404, "404 on user not found");
+  assert(uGetOne404.body.error === "User not found", "exact error message");
 
-  assert(insta01 && insta24 && insta05, "Found expected seeded posts");
+  // 5. PATCH /users/:id (username and email ignored)
+  const uPatch = await request("PATCH", `/users/${sneakyId}`, {
+    fullname: "Sneaky Updated",
+    username: "cannot_change",
+    isPrivate: true,
+  });
+  assert(uPatch.status === 200, "200 on patch user");
+  assert(uPatch.body.fullname === "Sneaky Updated", "fullname updated");
+  assert(uPatch.body.username === "sneaky_test", "username untouched");
+  assert(uPatch.body.isPrivate === true, "isPrivate updated");
+
+  // 6. DELETE /users/:id
+  const uDel = await request("DELETE", `/users/${sneakyId}`);
+  assert(uDel.status === 204, "204 on delete user");
+
+  const uDel404 = await request("DELETE", `/users/${sneakyId}`);
+  assert(uDel404.status === 404, "404 on delete nonexistent user");
+  assert(uDel404.body.error === "User not found", "exact error message");
+
+  // Re-seed for clean state for Part B
+  seed();
+  console.log("✔ Problem 1 User CRUD tests passed");
 
   // 2. Part B: GET /users pagination, sorting, filtering tests
   console.log("Testing GET /users pagination...");
@@ -257,37 +275,18 @@ async function run() {
   assert(pInvalidDate.body.error === "from and to must be valid dates", "exact error");
   console.log("✔ GET /posts filtering tests passed");
 
-  // 4. Problem 3 Relations tests
-  console.log("Testing Relations: POST /posts and PATCH /posts/:id...");
-  const pCreateNoAuthor = await request("POST", "/posts", {
-    imageUrl: "https://picsum.photos/seed/new02/600/600",
-  });
-  assert(pCreateNoAuthor.status === 400, "400 on missing authorId");
-  assert(pCreateNoAuthor.body.error === "imageUrl and authorId are required", "exact error");
-
-  const pCreateInvalidAuthor = await request("POST", "/posts", {
-    imageUrl: "https://picsum.photos/seed/new03/600/600",
-    authorId: 999999,
-  });
-  assert(pCreateInvalidAuthor.status === 404, "404 on invalid authorId");
-  assert(pCreateInvalidAuthor.body.error === "User not found", "exact error");
-
-  const pCreateSuccess = await request("POST", "/posts", {
-    imageUrl: "https://picsum.photos/seed/new01/600/600",
-    caption: "First post!",
-    authorId: riya.id,
-  });
-  assert(pCreateSuccess.status === 201, "201 on success");
-  assert(pCreateSuccess.body.authorId === riya.id, "authorId matches riya");
-
-  const pPatchSteal = await request("PATCH", `/posts/${insta01.id}`, {
-    caption: "Baga, again 🌅",
-    authorId: arjun.id,
-  });
-  assert(pPatchSteal.status === 200, "200 on patch");
-  assert(pPatchSteal.body.caption === "Baga, again 🌅", "caption updated");
-  assert(pPatchSteal.body.authorId === riya.id, "authorId not stolen");
-  console.log("✔ POST /posts and PATCH /posts/:id tests passed");
+  // 4. Problem 3 Step 05 & 06: GET /posts/:id and GET /posts with sortBy=likes
+  seed();
+  let lookups = await getLookups();
+  let riya = lookups.usersByUsername["riya_travels"];
+  let arjun = lookups.usersByUsername["arjun_clicks"];
+  let dev = lookups.usersByUsername["dev_shoots"];
+  let aditya = lookups.usersByUsername["aditya_codes"];
+  let neha = lookups.usersByUsername["neha_designs"];
+  let insta01 = lookups.postsByInsta["insta01"];
+  let insta05 = lookups.postsByInsta["insta05"];
+  let insta10 = lookups.postsByInsta["insta10"];
+  let insta24 = lookups.postsByInsta["insta24"];
 
   console.log("Testing GET /posts/:id with author summary and like count...");
   const pGetInsta01 = await request("GET", `/posts/${insta01.id}`);
@@ -321,9 +320,54 @@ async function run() {
   assert(bottomKeys[0] === "insta23" && bottomKeys[1] === "insta21" && bottomKeys[2] === "insta19", "0 likes newest first: insta23, insta21, insta19");
   console.log("✔ GET /posts sortBy=likes tests passed");
 
+  // Step 04: POST /posts and PATCH /posts/:id
+  console.log("Testing Relations: POST /posts and PATCH /posts/:id...");
+  const pCreateNoAuthor = await request("POST", "/posts", {
+    imageUrl: "https://picsum.photos/seed/new02/600/600",
+  });
+  assert(pCreateNoAuthor.status === 400, "400 on missing authorId");
+  assert(pCreateNoAuthor.body.error === "imageUrl and authorId are required", "exact error");
+
+  const pCreateInvalidAuthor = await request("POST", "/posts", {
+    imageUrl: "https://picsum.photos/seed/new03/600/600",
+    authorId: 999999,
+  });
+  assert(pCreateInvalidAuthor.status === 404, "404 on invalid authorId");
+  assert(pCreateInvalidAuthor.body.error === "User not found", "exact error");
+
+  const pCreateSuccess = await request("POST", "/posts", {
+    imageUrl: "https://picsum.photos/seed/new01/600/600",
+    caption: "First post!",
+    authorId: riya.id,
+  });
+  assert(pCreateSuccess.status === 201, "201 on success");
+  assert(pCreateSuccess.body.authorId === riya.id, "authorId matches riya");
+
+  const pPatchSteal = await request("PATCH", `/posts/${insta01.id}`, {
+    caption: "Baga, again 🌅",
+    authorId: arjun.id,
+  });
+  assert(pPatchSteal.status === 200, "200 on patch");
+  assert(pPatchSteal.body.caption === "Baga, again 🌅", "caption updated");
+  assert(pPatchSteal.body.authorId === riya.id, "authorId not stolen");
+  console.log("✔ POST /posts and PATCH /posts/:id tests passed");
+
+  // Step 07: GET /users/:id counts and hasPosts filter
   console.log("Testing GET /users/:id counts and hasPosts filter...");
+  seed();
+  lookups = await getLookups();
+  riya = lookups.usersByUsername["riya_travels"];
+  arjun = lookups.usersByUsername["arjun_clicks"];
+  dev = lookups.usersByUsername["dev_shoots"];
+  aditya = lookups.usersByUsername["aditya_codes"];
+  neha = lookups.usersByUsername["neha_designs"];
+  insta01 = lookups.postsByInsta["insta01"];
+  insta05 = lookups.postsByInsta["insta05"];
+  insta10 = lookups.postsByInsta["insta10"];
+  insta24 = lookups.postsByInsta["insta24"];
+
   const uGetRiya = await request("GET", `/users/${riya.id}`);
-  assert(uGetRiya.body._count.posts === 8, "riya has posts (including new01)");
+  assert(uGetRiya.body._count.posts === 7, "riya has 7 posts");
   assert(uGetRiya.body._count.likes === 4, "riya liked 4 posts");
 
   const uGetDev = await request("GET", `/users/${dev.id}`);
@@ -419,17 +463,14 @@ async function run() {
   assert(likeDelAgain.body.error === "Like not found", "exact error");
   console.log("✔ Like and unlike tests passed");
 
-  // 5. Cascading deletes test
+  // 5. Cascading deletes test (Step 11)
   console.log("Testing Cascading Deletes (Step 11)...");
   seed();
-  // Refresh user & post ids
-  const usersFresh = (await request("GET", "/users?limit=50")).body.data;
-  const riyaFresh = usersFresh.find((u) => u.username === "riya_travels");
-  const arjunFresh = usersFresh.find((u) => u.username === "arjun_clicks");
-
-  const postsFresh = (await request("GET", "/posts?limit=50")).body.data;
-  const insta10Fresh = postsFresh.find((p) => p.imageUrl.includes("insta10"));
-  const insta24Fresh = postsFresh.find((p) => p.imageUrl.includes("insta24"));
+  lookups = await getLookups();
+  const riyaFresh = lookups.usersByUsername["riya_travels"];
+  const arjunFresh = lookups.usersByUsername["arjun_clicks"];
+  const insta10Fresh = lookups.postsByInsta["insta10"];
+  const insta24Fresh = lookups.postsByInsta["insta24"];
 
   // Delete riya
   const delRiya = await request("DELETE", `/users/${riyaFresh.id}`);
@@ -463,10 +504,10 @@ async function run() {
   // 6. Bonus Step 12: GET /users/:id/liked-posts
   console.log("Testing GET /users/:id/liked-posts...");
   seed();
-  const usersFresh2 = (await request("GET", "/users?limit=50")).body.data;
-  const r2 = usersFresh2.find((u) => u.username === "riya_travels");
-  const a2 = usersFresh2.find((u) => u.username === "arjun_clicks");
-  const n2 = usersFresh2.find((u) => u.username === "neha_designs");
+  lookups = await getLookups();
+  const r2 = lookups.usersByUsername["riya_travels"];
+  const a2 = lookups.usersByUsername["arjun_clicks"];
+  const n2 = lookups.usersByUsername["neha_designs"];
 
   const rLiked = await request("GET", `/users/${r2.id}/liked-posts`);
   assert(rLiked.status === 200, "200 on riya liked posts");
